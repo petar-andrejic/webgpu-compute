@@ -1,0 +1,13 @@
+[package]
+name = "webgpu_compute"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bytemuck = "1.17.1"
+futures = "0.3.30"
+log = "0.4.22"
+parking_lot = "0.12.3"
+pollster = "0.3.0"
+thiserror = "1.0.63"
+wgpu = "22.1.0"
