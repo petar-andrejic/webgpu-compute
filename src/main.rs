@@ -29,10 +29,9 @@ async fn run(engine: Arc<Engine>) -> Result<(), Box<dyn Error>> {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let engine = Arc::new(Engine::new().block_on()?);
-    let (poll_join, mut poll_close) = engine.clone().create_poll_loop(Duration::from_millis(100));
+    let poll_handle = engine.clone().create_poll_loop(Duration::from_millis(100));
     run(engine).block_on()?;
 
-    poll_close.close();
-    poll_join.join().expect("Failed to join poll loop");
+    drop(poll_handle);
     Ok(())
 }

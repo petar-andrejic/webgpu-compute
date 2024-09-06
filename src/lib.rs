@@ -1,16 +1,14 @@
 use std::{
-    iter::once,
-    sync::{
+    iter::once, sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
-    },
-    thread::{self, sleep},
-    time::Duration,
+    }, thread::{self, sleep}, time::Duration
 };
 
 use bytemuck::{cast_slice, NoUninit, Pod};
-use parking_lot::Mutex;
 use futures::channel::oneshot;
+use log::error;
+use parking_lot::Mutex;
 // use pollster::FutureExt;
 #[derive(Debug)]
 pub struct Engine {
@@ -117,7 +115,9 @@ impl AsyncBufferSlice for wgpu::BufferSlice<'_> {
 
     async fn map_future(&self, mode: wgpu::MapMode) -> Result<(), SyncError> {
         let (sx, rx) = oneshot::channel();
-        self.map_async(mode, move |result| sx.send(result).expect("Channel unexpectedly closed"));
+        self.map_async(mode, move |result| {
+            sx.send(result).expect("Channel unexpectedly closed")
+        });
         rx.await??;
         Ok(())
     }
@@ -125,19 +125,25 @@ impl AsyncBufferSlice for wgpu::BufferSlice<'_> {
 
 pub struct CloseHandle {
     alive: Arc<AtomicBool>,
+    handle: Option<thread::JoinHandle<()>>,
 }
 
-impl CloseHandle {
-    pub fn close(&mut self) {
+impl Drop for CloseHandle {
+    fn drop(&mut self) {
         self.alive.store(false, Ordering::Relaxed);
+        self.handle.take().map(|h| {
+            match h.join() {
+                Ok(()) => (),
+                Err(err) => {
+                   error!("Thread panicked while closing handle: {:?}", err)
+                },
+            }
+        });
     }
 }
 
 impl Engine {
-    pub fn create_poll_loop(
-        self: Arc<Self>,
-        wait_duration: Duration,
-    ) -> (thread::JoinHandle<()>, CloseHandle) {
+    pub fn create_poll_loop(self: Arc<Self>, wait_duration: Duration) -> CloseHandle {
         let task_alive = Arc::<AtomicBool>::new(true.into());
         let task_engine = self.clone();
         let handle_alive = task_alive.clone();
@@ -147,12 +153,11 @@ impl Engine {
                 sleep(wait_duration);
             }
         });
-        (
-            join_handle,
-            CloseHandle {
-                alive: handle_alive,
-            },
-        )
+
+        CloseHandle {
+            alive: handle_alive,
+            handle: Some(join_handle),
+        }
     }
 }
 
@@ -175,7 +180,6 @@ impl Engine {
 
         Ok(Engine { device, queue })
     }
-
 
     pub fn create_operation(&self, module: &wgpu::ShaderModule, label: String) -> Operation {
         let pipeline_label = label.clone() + "_pipeline";
