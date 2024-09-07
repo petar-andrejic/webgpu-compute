@@ -1,55 +1,26 @@
+pub mod channel;
+
 use std::{
-    iter::once, sync::{
+    iter::once,
+    sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
-    }, thread::{self, sleep}, time::Duration
+    },
+    thread::{self, sleep},
+    time::Duration,
 };
 
+use channel::{once_signal, oneshot};
 use bytemuck::{cast_slice, NoUninit, Pod};
-use futures::channel::oneshot;
 use log::error;
-use parking_lot::Mutex;
+
 // use pollster::FutureExt;
 #[derive(Debug)]
 pub struct Engine {
-    pub device: wgpu::Device,
-    pub queue: wgpu::Queue,
+    pub device: Arc<wgpu::Device>,
+    pub queue: Arc<wgpu::Queue>,
+    _close_handle: CloseHandle,
 }
-
-pub struct AtomicSendOnce<T> {
-    sent: Arc<AtomicBool>,
-    value: Arc<Mutex<Option<T>>>,
-}
-
-impl<T> AtomicSendOnce<T> {
-    pub fn try_send(&mut self, val: T) -> Result<(), ()> {
-        if self.is_closed() {
-            return Err(());
-        }
-
-        *self.value.lock() = Some(val);
-        self.sent.store(true, Ordering::Release);
-        Ok(())
-    }
-
-    pub fn send(&mut self, val: T) {
-        match self.try_send(val) {
-            Ok(()) => (),
-            Err(()) => panic!("Attempted to send on closed channel"),
-        }
-    }
-
-    pub fn is_closed(&self) -> bool {
-        self.sent.load(Ordering::Acquire)
-    }
-}
-
-impl<T> Drop for AtomicSendOnce<T> {
-    fn drop(&mut self) {
-        self.sent.store(true, Ordering::Relaxed);
-    }
-}
-
 #[derive(Debug)]
 pub struct Operation {
     pub label: String,
@@ -75,26 +46,25 @@ pub enum EngineCreationError {
 pub enum SyncError {
     #[error("Failed to map buffer")]
     MapBuffer(#[from] wgpu::BufferAsyncError),
-    #[error("Channel unexpectedly cancelled before receiving signal")]
-    Channel(#[from] oneshot::Canceled),
+    #[error("Channel failed")]
+    Channel(#[from] channel::ChannelError),
 }
 
 trait AsyncQueue {
-    async fn submit_async<I>(&self, command_buffers: I) -> Result<(), SyncError>
+    async fn submit_async<I>(&self, command_buffers: I)
     where
         I: IntoIterator<Item = wgpu::CommandBuffer>;
 }
 
 impl AsyncQueue for wgpu::Queue {
-    async fn submit_async<I>(&self, command_buffers: I) -> Result<(), SyncError>
+    async fn submit_async<I>(&self, command_buffers: I)
     where
         I: IntoIterator<Item = wgpu::CommandBuffer>,
     {
-        let (sx, rx) = oneshot::channel();
+        let (sx, rx) = once_signal::channel();
         self.submit(command_buffers);
-        self.on_submitted_work_done(move || sx.send(()).expect("Channel unexpectedly closed"));
-        rx.await?;
-        Ok(())
+        self.on_submitted_work_done(move || sx.send());
+        rx.await;
     }
 }
 
@@ -116,14 +86,15 @@ impl AsyncBufferSlice for wgpu::BufferSlice<'_> {
     async fn map_future(&self, mode: wgpu::MapMode) -> Result<(), SyncError> {
         let (sx, rx) = oneshot::channel();
         self.map_async(mode, move |result| {
-            sx.send(result).expect("Channel unexpectedly closed")
+            sx.send(result);
         });
         rx.await??;
         Ok(())
     }
 }
 
-pub struct CloseHandle {
+#[derive(Debug)]
+struct CloseHandle {
     alive: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<()>>,
 }
@@ -131,25 +102,32 @@ pub struct CloseHandle {
 impl Drop for CloseHandle {
     fn drop(&mut self) {
         self.alive.store(false, Ordering::Release);
-        self.handle.take().map(|h| {
-            match h.join() {
-                Ok(()) => (),
-                Err(err) => {
-                   error!("Thread panicked while closing handle: {:?}", err)
-                },
+        self.handle.take().map(|h| match h.join() {
+            Ok(()) => (),
+            Err(err) => {
+                error!("Thread panicked while closing handle: {:?}", err)
             }
         });
     }
 }
 
-impl Engine {
-    pub fn create_poll_loop(self: Arc<Self>, wait_duration: Duration) -> CloseHandle {
+impl<T> GPUArray<T> {
+    pub fn buf(&self) -> &wgpu::Buffer {
+        &self.buffer
+    }
+}
+
+trait AsyncDevice {
+    fn create_poll_loop(self: Arc<Self>, wait_duration: Duration) -> CloseHandle;
+}
+
+impl AsyncDevice for wgpu::Device {
+    fn create_poll_loop(self: Arc<Self>, wait_duration: Duration) -> CloseHandle {
         let task_alive = Arc::<AtomicBool>::new(true.into());
-        let task_engine = self.clone();
         let handle_alive = task_alive.clone();
         let join_handle = thread::spawn(move || {
             while task_alive.load(Ordering::Acquire) {
-                task_engine.device.poll(wgpu::Maintain::Poll);
+                self.poll(wgpu::Maintain::Poll);
                 sleep(wait_duration);
             }
         });
@@ -158,12 +136,6 @@ impl Engine {
             alive: handle_alive,
             handle: Some(join_handle),
         }
-    }
-}
-
-impl<T> GPUArray<T> {
-    pub fn buf(&self) -> &wgpu::Buffer {
-        &self.buffer
     }
 }
 
@@ -176,9 +148,15 @@ impl Engine {
             .await
             .ok_or(EngineCreationError::RequestAdapter)?;
 
-        let (device, queue) = adapter.request_device(&Default::default(), None).await?;
-
-        Ok(Engine { device, queue })
+        let (raw_device, raw_queue) = adapter.request_device(&Default::default(), None).await?;
+        let device = Arc::new(raw_device);
+        let queue = Arc::new(raw_queue);
+        let close_handle = device.clone().create_poll_loop(Duration::from_millis(100));
+        Ok(Engine {
+            device,
+            queue,
+            _close_handle: close_handle,
+        })
     }
 
     pub fn create_operation(&self, module: &wgpu::ShaderModule, label: String) -> Operation {
@@ -200,15 +178,19 @@ impl Engine {
         }
     }
 
-    pub fn bind_vec<T>(&self, data: Vec<T>) -> GPUArray<T> {
-        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+    pub fn create_buffer<T>(&self, length: usize) -> wgpu::Buffer {
+        self.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             mapped_at_creation: false,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::COPY_SRC,
-            size: (size_of::<T>() * data.len()) as u64,
-        });
+            size: (size_of::<T>() * length) as u64,
+        })
+    }
+
+    pub fn bind_vec<T>(&self, data: Vec<T>) -> GPUArray<T> {
+        let buffer = self.create_buffer::<T>(data.len());
         GPUArray { buffer, data }
     }
 
@@ -247,7 +229,7 @@ impl Engine {
         self.device.create_bind_group(&bind_group_desc)
     }
 
-    pub async fn dispatch<'item, I1, I2>(&self, args: I1) -> Result<(), SyncError>
+    pub async fn dispatch<'item, I1, I2>(&self, args: I1)
     where
         I1: IntoIterator<Item = (&'item Operation, I2)>,
         I2: IntoIterator<Item = &'item wgpu::Buffer>,
@@ -266,11 +248,10 @@ impl Engine {
                 );
             }
         }
-        self.queue.submit_async(Some(encoder.finish())).await?;
-        Ok(())
+        self.queue.submit_async(Some(encoder.finish())).await;
     }
 
-    pub async fn to_gpu<T: NoUninit + Pod>(&self, x: &GPUArray<T>) -> Result<(), SyncError> {
+    pub async fn to_gpu<T: NoUninit + Pod>(&self, x: &GPUArray<T>) {
         // Create staging buffer
         let staging_desc = wgpu::BufferDescriptor {
             label: None,
@@ -290,8 +271,7 @@ impl Engine {
         // Copy staging -> buffer
         let mut encoder = self.device.create_command_encoder(&Default::default());
         encoder.copy_buffer_to_buffer(&staging, 0, &x.buffer, 0, x.buffer.size());
-        self.queue.submit_async(once(encoder.finish())).await?;
-        Ok(())
+        self.queue.submit_async(once(encoder.finish())).await;
     }
 
     pub async fn to_cpu<T: NoUninit + Pod>(&self, x: &mut GPUArray<T>) -> Result<(), SyncError> {
@@ -307,7 +287,7 @@ impl Engine {
         // Copy buffer -> staging
         let mut encoder = self.device.create_command_encoder(&Default::default());
         encoder.copy_buffer_to_buffer(&x.buffer, 0, &staging, 0, x.buffer.size());
-        self.queue.submit_async(once(encoder.finish())).await?;
+        self.queue.submit_async(once(encoder.finish())).await;
 
         // Copy staging -> CPU
         let slice = staging.slice(..);
