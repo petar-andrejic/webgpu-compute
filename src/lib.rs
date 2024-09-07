@@ -28,7 +28,7 @@ impl<T> AtomicSendOnce<T> {
         }
 
         *self.value.lock() = Some(val);
-        self.sent.store(true, Ordering::Relaxed);
+        self.sent.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -40,7 +40,7 @@ impl<T> AtomicSendOnce<T> {
     }
 
     pub fn is_closed(&self) -> bool {
-        self.sent.load(Ordering::Relaxed)
+        self.sent.load(Ordering::Acquire)
     }
 }
 
@@ -130,7 +130,7 @@ pub struct CloseHandle {
 
 impl Drop for CloseHandle {
     fn drop(&mut self) {
-        self.alive.store(false, Ordering::Relaxed);
+        self.alive.store(false, Ordering::Release);
         self.handle.take().map(|h| {
             match h.join() {
                 Ok(()) => (),
@@ -148,7 +148,7 @@ impl Engine {
         let task_engine = self.clone();
         let handle_alive = task_alive.clone();
         let join_handle = thread::spawn(move || {
-            while task_alive.load(Ordering::Relaxed) {
+            while task_alive.load(Ordering::Acquire) {
                 task_engine.device.poll(wgpu::Maintain::Poll);
                 sleep(wait_duration);
             }
