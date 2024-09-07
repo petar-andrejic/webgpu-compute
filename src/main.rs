@@ -1,5 +1,5 @@
 use pollster::FutureExt;
-use std::{error::Error, sync::Arc, time::Duration};
+use std::error::Error;
 
 use webgpu_compute::{Engine, SyncError};
 

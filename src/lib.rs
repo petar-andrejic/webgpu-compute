@@ -102,12 +102,11 @@ struct CloseHandle {
 impl Drop for CloseHandle {
     fn drop(&mut self) {
         self.alive.store(false, Ordering::Release);
-        self.handle.take().map(|h| match h.join() {
-            Ok(()) => (),
-            Err(err) => {
+        if let Some(handle) = self.handle.take() {
+            if let Err(err) = handle.join() {
                 error!("Thread panicked while closing handle: {:?}", err)
             }
-        });
+        }
     }
 }
 

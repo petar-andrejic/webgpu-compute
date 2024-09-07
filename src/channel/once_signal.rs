@@ -33,7 +33,9 @@ pub struct Sender {
 impl Drop for Sender {
     fn drop(&mut self) {
         self.data.closed.store(true, Ordering::Release);
-        self.data.waker.lock().as_ref().map(|w| w.wake_by_ref());
+        if let Some(waker) = self.data.waker.lock().as_ref() {
+            waker.wake_by_ref()
+        }
     }
 }
 
