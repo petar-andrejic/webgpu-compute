@@ -72,7 +72,9 @@ impl Drop for Engine {
         drop(self.send_handle.take());
         if let Some(handle) = self.poll_handle.take() {
             handle.thread().unpark();
-            handle.join().expect("Panicked in poll loop");
+            if let Err(err) = handle.join() {
+                log::error!("Poll loop panicked with error {:?}", err);
+            };
         }
     }
 }
