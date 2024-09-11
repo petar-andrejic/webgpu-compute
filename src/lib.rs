@@ -195,7 +195,7 @@ impl Engine {
         buffer
     }
 
-    pub async fn save<T: NoUninit + Pod + Clone>(&self, buffer: &Buffer<T>) -> Vec<T> {
+    pub async fn save<T: NoUninit + Pod + Clone>(&self, buffer: &Buffer<T>) -> Result<Vec<T>, SyncError> {
         let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             mapped_at_creation: false,
@@ -211,11 +211,9 @@ impl Engine {
             sx.send(result);
         });
         self.device.poll(wgpu::Maintain::Poll);
-        rx.await
-            .expect("Channel closed without send")
-            .expect("WGPU failed to map buffer due to internal error");
+        rx.await??;
         let view = slice.get_mapped_range();
-        cast_slice(&view[..]).to_vec()
+        Ok(cast_slice(&view[..]).to_vec())
     }
 
     pub fn bind<'item, I>(&self, op: &'item Operation, buffers: I) -> wgpu::BindGroup

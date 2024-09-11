@@ -18,7 +18,7 @@ async fn gpu_work(engine: Engine) {
     let view2 = [tmp.view(), buf_out.view()];
 
     engine.dispatch([(&op, view1), (&op, view2)]).await;
-    let data_out = engine.save(&buf_out).await;
+    let data_out = engine.save(&buf_out).await.expect("Failed to save output");
 
     print!("[ ");
     for i in data_out {
