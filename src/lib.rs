@@ -1,27 +1,25 @@
 pub mod channel;
 
 use std::{
-    iter::once, sync::
-        Arc
-    , thread::{park, spawn, JoinHandle}
+    iter::once,
+    sync::Arc,
+    thread::{park, spawn, JoinHandle},
 };
 
-use channel::{once_signal, oneshot, spsc, ChannelError};
 use bytemuck::{cast_slice, NoUninit, Pod};
-use log::error;
-
+use channel::{once_signal, oneshot, spsc, ChannelError};
 
 #[derive(Debug)]
 pub struct Task {
     idx: wgpu::SubmissionIndex,
-    finished: once_signal::Sender
+    finished: once_signal::Sender,
 }
 #[derive(Debug)]
 pub struct Engine {
     pub device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     send_handle: Option<spsc::Sender<Task>>,
-    poll_handle: Option<JoinHandle<()>>
+    poll_handle: Option<JoinHandle<()>>,
 }
 
 #[derive(Debug)]
@@ -83,44 +81,45 @@ impl Engine {
 
         let task_device = device.clone();
         let (sx, rx) = spsc::channel::<Task>();
-        let poll_handle = spawn(move ||{
-            loop {
-                match rx.try_receive() {
-                    Ok(task) => {
-                        task_device.poll(wgpu::Maintain::wait_for(task.idx));
-                        task.finished.send();
-                    },
-                    Err(ChannelError::Empty) => {park()},
-                    Err(ChannelError::SenderClosed) => {return;},
-                    Err(_) => unreachable!()
+        let poll_handle = spawn(move || loop {
+            match rx.try_receive() {
+                Ok(task) => {
+                    task_device.poll(wgpu::Maintain::wait_for(task.idx));
+                    task.finished.send();
                 }
+                Err(ChannelError::Empty) => park(),
+                Err(ChannelError::SenderClosed) => {
+                    return;
+                }
+                Err(_) => unreachable!(),
             }
         });
         Ok(Engine {
             device,
             queue,
             poll_handle: Some(poll_handle),
-            send_handle: Some(sx)
+            send_handle: Some(sx),
         })
     }
 
     pub async fn submit<I>(&self, command_buffers: I)
     where
-        I: IntoIterator<Item = wgpu::CommandBuffer> {
-            let idx = self.queue.submit(command_buffers);
-            let (sx, rx) = once_signal::channel();
-            let task = Task {idx, finished: sx};
-            self.send_handle
-                .as_ref()
-                .expect("Missing send handle")
-                .send(task);
-            self.poll_handle
-                .as_ref()
-                .expect("Missing poll handle")
-                .thread()
-                .unpark();
-            rx.await;
-        }
+        I: IntoIterator<Item = wgpu::CommandBuffer>,
+    {
+        let idx = self.queue.submit(command_buffers);
+        let (sx, rx) = once_signal::channel();
+        let task = Task { idx, finished: sx };
+        self.send_handle
+            .as_ref()
+            .expect("Missing send handle")
+            .send(task);
+        self.poll_handle
+            .as_ref()
+            .expect("Missing poll handle")
+            .thread()
+            .unpark();
+        rx.await;
+    }
 
     pub fn create_operation(&self, module: &wgpu::ShaderModule, label: String) -> Operation {
         let pipeline_label = label.clone() + "_pipeline";
@@ -255,7 +254,9 @@ impl Engine {
         // Copy staging -> CPU
         let slice = staging.slice(..);
         let (sx, rx) = oneshot::channel();
-        slice.map_async(wgpu::MapMode::Read, |result|{sx.send(result);});
+        slice.map_async(wgpu::MapMode::Read, |result| {
+            sx.send(result);
+        });
         self.device.poll(wgpu::Maintain::Poll);
         rx.await
             .expect("Channel closed without send")

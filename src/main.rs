@@ -1,9 +1,10 @@
-use pollster::FutureExt;
-use std::error::Error;
+use std::{error::Error, time::Duration};
+use tokio::time::sleep;
 
 use webgpu_compute::Engine;
 
-async fn run(engine: &Engine) {
+async fn gpu_work(engine: Engine) {
+    println!("Begin GPU work");
     let shader_desc = wgpu::include_wgsl!("../shaders/hello_world.wgsl");
     let module = engine.device.create_shader_module(shader_desc);
     let op = engine.create_operation(&module, "hello world".to_string());
@@ -13,25 +14,26 @@ async fn run(engine: &Engine) {
 
     let view1 = [data_in.buf(), &tmp];
     let view2 = [&tmp, data_out.buf()];
-    
+
     engine.to_gpu(&data_in).await;
-    let fut = async {
-        println!("Begin GPU work");
-        engine.dispatch([(&op, view1), (&op, view2)]).await; 
-        println!("GPU work done");
-    };
-    println!("Doing some CPU work while waiting for GPU");
-    fut.await; // Lifetimes ensure we have to await for this before calling to_cpu!
+    engine.dispatch([(&op, view1), (&op, view2)]).await;
     engine.to_cpu(&mut data_out).await;
     print!("[ ");
     for i in data_out.data {
         print!("{} ", i);
     }
     println!("]");
+    println!("Finish GPU work");
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let engine = Engine::new().block_on()?;
-    run(&engine).block_on();
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let engine = Engine::new().await?;
+    let handle1 = tokio::task::spawn(async move { gpu_work(engine).await });
+    let handle2 = tokio::task::spawn(async {
+        sleep(Duration::from_millis(4)).await;
+        println!("Doing some CPU work while waiting for GPU");
+    });
+    tokio::try_join!(handle1, handle2)?;
     Ok(())
 }
