@@ -8,18 +8,20 @@ async fn gpu_work(engine: Engine) {
     let shader_desc = wgpu::include_wgsl!("../shaders/hello_world.wgsl");
     let module = engine.device.create_shader_module(shader_desc);
     let op = engine.create_operation(&module, "hello world".to_string());
-    let data_in = engine.bind_vec(vec![0u32, 1u32, 2u32, 3u32]);
+    let data_in = vec![0u32, 1u32, 2u32, 3u32];
+
+    let buf_in = engine.load(&data_in).await;
     let tmp = engine.create_buffer::<u32>(4);
-    let mut data_out = engine.create_gpu_vec::<u32>(4);
+    let buf_out = engine.create_buffer::<u32>(4);
 
-    let view1 = [data_in.buf(), &tmp];
-    let view2 = [&tmp, data_out.buf()];
+    let view1 = [buf_in.view(), tmp.view()];
+    let view2 = [tmp.view(), buf_out.view()];
 
-    engine.to_gpu(&data_in).await;
     engine.dispatch([(&op, view1), (&op, view2)]).await;
-    engine.to_cpu(&mut data_out).await;
+    let data_out = engine.save(&buf_out).await;
+
     print!("[ ");
-    for i in data_out.data {
+    for i in data_out {
         print!("{} ", i);
     }
     println!("]");
