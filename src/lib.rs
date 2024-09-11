@@ -110,16 +110,6 @@ impl<T> BufferLike<T> for VecDeque<T> {
     }
 }
 
-impl<T> BufferLike<T> for LinkedList<T> {
-    fn size(&self) -> u64 {
-        (self.len() * size_of::<T>()) as u64
-    }
-    
-    fn len(&self) -> usize {
-        self.len()
-    }
-}
-
 impl<T> BufferLike<T> for Buffer<T> {
     fn size(&self) -> u64 {
         self.size()
