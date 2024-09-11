@@ -69,12 +69,18 @@ impl<T> Buffer<T> {
 
 impl Drop for Engine {
     fn drop(&mut self) {
-        drop(self.send_handle.take());
-        if let Some(handle) = self.poll_handle.take() {
-            handle.thread().unpark();
-            if let Err(err) = handle.join() {
+        if let Some(send_handle) = self.send_handle.take() {
+            drop(send_handle);
+        } else {
+            log::error!("Send handle was missing");
+        }
+        if let Some(poll_handle) = self.poll_handle.take() {
+            poll_handle.thread().unpark();
+            if let Err(err) = poll_handle.join() {
                 log::error!("Poll loop panicked with error {:?}", err);
             };
+        } else {
+            log::error!("Poll handle was missing");
         }
     }
 }
