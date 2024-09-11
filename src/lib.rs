@@ -1,10 +1,7 @@
 pub mod channel;
 
 use std::{
-    iter::once,
-    marker::PhantomData,
-    sync::Arc,
-    thread::{park, spawn, JoinHandle},
+    collections::{LinkedList, VecDeque}, iter::once, marker::PhantomData, sync::Arc, thread::{park, spawn, JoinHandle}
 };
 
 use bytemuck::{cast_slice, NoUninit, Pod};
@@ -64,6 +61,72 @@ impl<T> Buffer<T> {
 
     pub fn size(&self) -> u64 {
         self.buffer.size()
+    }
+}
+
+pub trait BufferLike<T> {
+    fn size(&self) -> u64;
+
+    fn len(&self) -> usize;
+}
+
+impl<T> BufferLike<T> for dyn ExactSizeIterator<Item = T> {
+    fn size(&self) -> u64 {
+        (self.len() * size_of::<T>()) as u64
+    }
+    
+    fn len(&self) -> usize {
+        self.len()
+    }
+}
+
+impl<T> BufferLike<T> for Vec<T> {
+    fn size(&self) -> u64 {
+        (self.len() * size_of::<T>()) as u64
+    }
+    
+    fn len(&self) -> usize {
+        self.len()
+    }
+}
+
+impl<T> BufferLike<T> for [T] {
+    fn size(&self) -> u64 {
+        (self.len() * size_of::<T>()) as u64
+    }
+    
+    fn len(&self) -> usize {
+        self.len()
+    }
+}
+
+impl<T> BufferLike<T> for VecDeque<T> {
+    fn size(&self) -> u64 {
+        (self.len() * size_of::<T>()) as u64
+    }
+    
+    fn len(&self) -> usize {
+        self.len()
+    }
+}
+
+impl<T> BufferLike<T> for LinkedList<T> {
+    fn size(&self) -> u64 {
+        (self.len() * size_of::<T>()) as u64
+    }
+    
+    fn len(&self) -> usize {
+        self.len()
+    }
+}
+
+impl<T> BufferLike<T> for Buffer<T> {
+    fn size(&self) -> u64 {
+        self.size()
+    }
+    
+    fn len(&self) -> usize {
+        self.len()
     }
 }
 
@@ -175,6 +238,23 @@ impl Engine {
         }
     }
 
+    pub fn create_buffer_like<T>(&self, example: &impl BufferLike<T>) -> Buffer<T>{
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            mapped_at_creation: false,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+            size: example.size(),
+        });
+
+        Buffer {
+            buffer,
+            length: example.len(),
+            _phantom: PhantomData {},
+        }
+    }
+
     pub async fn load<T: NoUninit + Pod>(&self, data: &[T]) -> Buffer<T> {
         let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
@@ -195,7 +275,10 @@ impl Engine {
         buffer
     }
 
-    pub async fn save<T: NoUninit + Pod + Clone>(&self, buffer: &Buffer<T>) -> Result<Vec<T>, SyncError> {
+    pub async fn save<T: NoUninit + Pod + Clone>(
+        &self,
+        buffer: &Buffer<T>,
+    ) -> Result<Vec<T>, SyncError> {
         let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             mapped_at_creation: false,

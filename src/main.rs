@@ -11,8 +11,8 @@ async fn gpu_work(engine: Engine) {
     let data_in = vec![0u32, 1u32, 2u32, 3u32];
 
     let buf_in = engine.load(&data_in).await;
-    let tmp = engine.create_buffer::<u32>(4);
-    let buf_out = engine.create_buffer::<u32>(4);
+    let tmp = engine.create_buffer_like(&data_in);
+    let buf_out = engine.create_buffer_like(&buf_in);
 
     let view1 = [buf_in.view(), tmp.view()];
     let view2 = [tmp.view(), buf_out.view()];
