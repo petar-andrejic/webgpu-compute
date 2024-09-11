@@ -1,11 +1,9 @@
 use pollster::FutureExt;
 use std::error::Error;
 
-use webgpu_compute::{Engine, SyncError};
+use webgpu_compute::Engine;
 
-type EmptyResult = Result<(), Box<dyn Error>>;
-
-async fn run(engine: &Engine) -> EmptyResult {
+async fn run(engine: &Engine) {
     let shader_desc = wgpu::include_wgsl!("../shaders/hello_world.wgsl");
     let module = engine.device.create_shader_module(shader_desc);
     let op = engine.create_operation(&module, "hello world".to_string());
@@ -18,23 +16,22 @@ async fn run(engine: &Engine) -> EmptyResult {
     
     engine.to_gpu(&data_in).await;
     let fut = async {
+        println!("Begin GPU work");
         engine.dispatch([(&op, view1), (&op, view2)]).await; 
-        println!("Gpu work done");
-        Ok::<(),SyncError>(())
+        println!("GPU work done");
     };
     println!("Doing some CPU work while waiting for GPU");
-    fut.await?; // Lifetimes ensure we have to await for this before calling to_cpu!
-    engine.to_cpu(&mut data_out).await?;
+    fut.await; // Lifetimes ensure we have to await for this before calling to_cpu!
+    engine.to_cpu(&mut data_out).await;
     print!("[ ");
     for i in data_out.data {
         print!("{} ", i);
     }
     println!("]");
-    Ok(())
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
     let engine = Engine::new().block_on()?;
-    run(&engine).block_on()?;
+    run(&engine).block_on();
     Ok(())
 }
